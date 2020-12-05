@@ -50,6 +50,8 @@
 #include <sensor_msgs/LaserScan.h>
 // maps
 #include <nav_msgs/OccupancyGrid.h>
+// Force triggering a no-motion update and global localization.
+#include <std_srvs/Empty.h>
 
 #include <lama/pose3d.h>
 #include <lama/loc2d.h>
@@ -66,15 +68,28 @@ public:
     ~Loc2DROS();
 
     void onInitialPose(const geometry_msgs::PoseWithCovarianceStampedConstPtr& initial_pose);
+    void onInitialPose(const Pose2D& prior);
     void onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_scan);
+    void onMapReceived(const nav_msgs::OccupancyGridConstPtr& msg);
 
     //bool onGetMap(nav_msgs::GetMap::Request &req, nav_msgs::GetMap::Response &res);
 
 private:
 
-    void InitLoc2DFromOccupancyGridMsg(const nav_msgs::OccupancyGrid& msg);
+    // keep old API
+    inline void InitLoc2DFromOccupancyGridMsg(const nav_msgs::OccupancyGrid& msg)
+    {
+        InitLoc2DFromOccupancyGridMsg(initial_prior_, msg);
+    }
+
+    void InitLoc2DFromOccupancyGridMsg(const Pose2D& prior, const nav_msgs::OccupancyGrid& msg);
 
     bool initLaser(const sensor_msgs::LaserScanConstPtr& laser_scan);
+
+    // A localization update can be forced by an external trigger.
+    bool onTriggerUpdate(std_srvs::Empty::Request&, std_srvs::Empty::Response&);
+    // Trigger a global localization procedure.
+    bool globalLocalizationCallback(std_srvs::Empty::Request& req, std_srvs::Empty::Response& resp);
 
 private:
 
@@ -96,6 +111,11 @@ private:
 
     // Subscribers
     ros::Subscriber pose_sub_;   ///< Subscriber of the initial pose (with covariance)
+    ros::Subscriber map_sub_; ///< Subscriber of the map; used if \p use_map_topic_ is true.
+
+    // Service providers
+    ros::ServiceServer srv_update_; ///< Service to trigger a scan match
+    ros::ServiceServer srv_global_loc_; ///< Used to trigger global localization on request.
 
     // == Laser stuff ==
     // Handle multiple lasers at once
@@ -110,9 +130,18 @@ private:
 
     std::string scan_topic_;   ///< LaserScan message topic.
 
+    bool use_map_topic_; ///< True to subscribe to the map topic instead of requesting the map through the "static_map" service
+    bool first_map_only_; ///< True to use only the first map ever received
+    bool first_map_received_; ///< True if the first map has already been received
+    bool use_pose_on_new_map_; ///< True to use the current algorithm pose when the map changes
+    bool force_update_; ///< True to force an update when a new laser scan is received
+    bool force_update_on_initial_pose_; ///< True to trigger a forced updated when an initial pose is received
+
     // == Inner state ==
     Loc2D   loc2d_;
     Pose2D odom_;
+    Loc2D::Options options_;
+    Pose2D initial_prior_;
 };
 
 } /* lama */
