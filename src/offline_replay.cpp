@@ -41,10 +41,14 @@
 
 #include "lama/ros/offline_replay.h"
 
+#include <algorithm>
+
 void lama::ReplayRosbag(ros::NodeHandle& pnh, const std::string& rosbag_filename)
 {
     std::string scan_topic;
     pnh.param("scan_topic", scan_topic, std::string("/scan"));
+    int queue_length;
+    pnh.param("queue_length", queue_length, 100);
 
     ROS_INFO("Scan topic: %s", scan_topic.c_str());
 
@@ -57,10 +61,10 @@ void lama::ReplayRosbag(ros::NodeHandle& pnh, const std::string& rosbag_filename
         ROS_FATAL("Unable to open rosbag [%s]: %s", rosbag_filename.c_str(), ex.what());
     }
 
-    auto pub_scan  = pnh.advertise<sensor_msgs::LaserScan>(scan_topic,10);
-    auto pub_tf  = pnh.advertise<tf2_msgs::TFMessage>("/tf",10);
-    auto pub_tf_static  = pnh.advertise<tf2_msgs::TFMessage>("/tf_static",10, true);
-    auto pub_clock = pnh.advertise<rosgraph_msgs::Clock>("/clock",10);
+    auto pub_scan  = pnh.advertise<sensor_msgs::LaserScan>(scan_topic, queue_length);
+    auto pub_tf  = pnh.advertise<tf2_msgs::TFMessage>("/tf", queue_length);
+    auto pub_tf_static  = pnh.advertise<tf2_msgs::TFMessage>("/tf_static", queue_length, true);
+    auto pub_clock = pnh.advertise<rosgraph_msgs::Clock>("/clock", queue_length);
 
     ROS_INFO("Allow time for the subscribers to connect");
     ros::WallDuration wait(2); wait.sleep();
@@ -82,7 +86,15 @@ void lama::ReplayRosbag(ros::NodeHandle& pnh, const std::string& rosbag_filename
         pub_clock.publish( clock_msg );
 
         if (m.getTopic() == "/tf") {
-            pub_tf.publish(m);
+            const auto msg = m.instantiate<tf2_msgs::TFMessage>();
+            if (msg)
+            {
+                if (std::none_of(msg->transforms.begin(), msg->transforms.end(),
+                                 [](const auto& transform) { return transform.header.frame_id == "map"; }))
+                {
+                    pub_tf.publish(m);
+                }
+            }
         } else if (m.getTopic() == "/tf_static") {
             pub_tf_static.publish(m);
         } else if( m.getTopic() == scan_topic) {

@@ -61,6 +61,7 @@ lama::Slam2DROS::Slam2DROS()
     pnh_.param("a_thresh",   options.rot_thresh,   0.25);
     pnh_.param("l2_max",     options.l2_max,        0.5);
     pnh_.param("truncate",   options.truncated_ray, 0.0);
+    pnh_.param("truncate_range",   options.truncated_range, 0.0);
     pnh_.param("resolution", options.resolution,   0.05);
     pnh_.param("strategy", options.strategy, std::string("gn"));
     pnh_.param("use_compression",       options.use_compression, false);
@@ -87,7 +88,7 @@ lama::Slam2DROS::Slam2DROS()
 
     // Syncronized LaserScan messages with odometry transforms. This ensures that an odometry transformation
     // exists when the handler of a LaserScan message is called.
-    laser_scan_sub_    = new message_filters::Subscriber<sensor_msgs::LaserScan>(nh_, scan_topic_, 100);
+    laser_scan_sub_    = new message_filters::Subscriber<sensor_msgs::LaserScan>(nh_, scan_topic_, 100, ros::TransportHints().tcpNoDelay());
     laser_scan_filter_ = new tf::MessageFilter<sensor_msgs::LaserScan>(*laser_scan_sub_, *tf_, odom_frame_id_, 100);
     laser_scan_filter_->registerCallback(boost::bind(&Slam2DROS::onLaserScan, this, _1));
 
@@ -161,12 +162,7 @@ void lama::Slam2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sc
 
         cloud->points.reserve(laser_scan->ranges.size());
         for(size_t i = 0; i < size; i += beam_step ){
-            double range;
-
-            if (laser_is_reversed_[laser_index])
-                range = laser_scan->ranges[size - i - 1];
-            else
-                range = laser_scan->ranges[i];
+            const double range = laser_scan->ranges[i];
 
             if (not std::isfinite(range))
                 continue;
@@ -246,23 +242,12 @@ bool lama::Slam2DROS::initLaser(const sensor_msgs::LaserScanConstPtr& laser_scan
         return false;
     }
 
-    if (up.z() > 0) {
-        laser_is_reversed_.push_back(laser_scan->angle_min > laser_scan->angle_max);
+    double roll, pitch, yaw;
+    laser_origin.getBasis().getRPY(roll, pitch, yaw);
+    Pose3D lp(laser_origin.getOrigin().x(), laser_origin.getOrigin().y(), 0,
+              roll, pitch, yaw);
 
-        Pose3D lp(laser_origin.getOrigin().x(), laser_origin.getOrigin().y(), 0,
-                  0, 0, tf::getYaw(laser_origin.getRotation()));
-
-        lasers_origin_.push_back( lp );
-        ROS_INFO("Laser is mounted upwards.");
-    } else {
-        laser_is_reversed_.push_back(laser_scan->angle_min < laser_scan->angle_max);
-
-        Pose3D lp(laser_origin.getOrigin().x(), laser_origin.getOrigin().y(), 0,
-                  M_PI, 0, tf::getYaw(laser_origin.getRotation()));
-
-        lasers_origin_.push_back( lp );
-        ROS_INFO("Laser is mounted upside down.");
-    }
+    lasers_origin_.push_back( lp );
 
     int laser_index = (int)frame_to_laser_.size();  // simple ID generator :)
     frame_to_laser_[laser_scan->header.frame_id] = laser_index;
