@@ -2,6 +2,8 @@ LaMa ROS - Alternative Localization and Mapping for ROS.
 ========================================================
 https://github.com/iris-ua/iris_lama_ros
 
+![Build Melodic](https://github.com/iris-ua/iris_lama_ros/workflows/Build%20Melodic/badge.svg)
+
 Developed and maintained by Eurico Pedrosa, University of Aveiro (C) 2019.
 
 Overview
@@ -69,6 +71,8 @@ roslaunch iris_lama_ros pf_slam2d_offine.launch scan_topic:=base_scan rosbag:=/p
 * `~compression_algorithm`: Compression algorithm to use, lz4 or zstd (default: "lz4").
 * `~cache_size`: Size of the LRU used during online data compression (default: 100).
 * `~mrange`: Maximum laser scan range (default: 16 meters).
+* `~truncate`: Truncate the laser scan range from start to "middle" (default: 0.0 meters, 0.0 means no truncation).
+* `~truncate_ray`: Truncate the laser scan range (or ray) from "middle" to end (default: 0.0 meters, 0.0 means no truncation).
 * `~map_publish_period`: How long between updates to the map (default: 5 seconds).
 
 Particle Filter SLAM only:
@@ -92,6 +96,11 @@ rosrun iris_lama_ros loc2d_ros scan:=base_scan
 ```
 Please use `rviz` to set the initial pose. Global localization is not yet implemented.
 
+### Services
+
+* `/request_nomotion_update`: Called to trigger an update without moving the robot (no-motion update)
+* `/global_localization`: Called to trigger a global localization procedure.
+
 ### Parameters
 
 * `~global_frame_id`: The frame attached to the map (default: "map").
@@ -106,5 +115,10 @@ Please use `rviz` to set the initial pose. Global localization is not yet implem
 * `~l2_max`: Maximum distance to use in the dynamic Euclidean distance map (default: 0.5 meters).
 * `~strategy`: Scan matching optimization strategy, GaussNewton ("gm") or Levenberg Marquard ("lm") (default: "gn").
 * `~patch_size`: Length of a patch (default: 32 cells).
-
-
+* `~use_map_topic`: True to subscribe to the `/map` topic instead of requesting the map through the "`static_map`" service (default: `false`).
+* `~first_map_only`: True to use only the first map ever received (default: `false`).
+* `~use_pose_on_new_map`: True to use the current algorithm pose when the map changes (default: `false`).
+* `~force_update_on_initial_pose`: True to trigger a no-motion update when an initial pose is received (default: `false`)
+* `~gloc_particles`: Number of particles used to find the best global localization (default: 3000)
+* `~gloc_thresh`: Value at which a global localization particle is considered viable. (default: 0.15 RMSE)
+* `~gloc_iters`: Maximum number of iterations executed by the global localization procedure (default: 20)
