@@ -50,6 +50,12 @@ lama::Loc2DROS::Loc2DROS()
 
     pnh_.param("transform_tolerance", tmp, 0.1); transform_tolerance_.fromSec(tmp);
 
+    pnh_.param("use_map_topic", use_map_topic_, false);
+    pnh_.param("first_map_only", first_map_only_, false);
+    pnh_.param("use_pose_on_new_map", use_pose_on_new_map_, false);
+
+    pnh_.param("force_update_on_initial_pose", force_update_on_initial_pose_, false);
+
     // Setup TF workers ...
     tf_ = new tf::TransformListener();
     tfb_= new tf::TransformBroadcaster();
@@ -57,7 +63,7 @@ lama::Loc2DROS::Loc2DROS()
     // Setup subscribers
     // Syncronized LaserScan messages with odometry transforms. This ensures that an odometry transformation
     // exists when the handler of a LaserScan message is called.
-    laser_scan_sub_    = new message_filters::Subscriber<sensor_msgs::LaserScan>(nh_, scan_topic_, 100);
+    laser_scan_sub_    = new message_filters::Subscriber<sensor_msgs::LaserScan>(nh_, scan_topic_, 100, ros::TransportHints().tcpNoDelay());
     laser_scan_filter_ = new tf::MessageFilter<sensor_msgs::LaserScan>(*laser_scan_sub_, *tf_, odom_frame_id_, 100);
     laser_scan_filter_->registerCallback(boost::bind(&Loc2DROS::onLaserScan, this, _1));
 
@@ -66,16 +72,61 @@ lama::Loc2DROS::Loc2DROS()
     // Set publishers
     pose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>("/pose", 10);
 
-    ROS_INFO("Requesting the map...");
-    nav_msgs::GetMap::Request  req;
-    nav_msgs::GetMap::Response resp;
-    while(ros::ok() and not ros::service::call("static_map", req, resp)){
-        ROS_WARN_THROTTLE(1, "Request for map failed; trying again ...");
-        ros::Duration d(0.5);
-        d.sleep();
-    }// end while
+    // Services
+    srv_update_ = nh_.advertiseService("/request_nomotion_update", &Loc2DROS::onTriggerUpdate, this);
+    srv_global_loc_ = nh_.advertiseService("global_localization", &Loc2DROS::globalLocalizationCallback, this);
 
-    InitLoc2DFromOccupancyGridMsg(resp.map);
+    // Fetch algorithm options
+    Vector2d pos; double init_a;
+    pnh_.param("initial_pos_x", pos[0], 0.0);
+    pnh_.param("initial_pos_y", pos[1], 0.0);
+    pnh_.param("initial_pos_a", init_a, 0.0);
+    initial_prior_ = lama::Pose2D(pos, init_a);
+
+    pnh_.param("d_thresh", options_.trans_thresh, 0.1);
+    pnh_.param("a_thresh", options_.rot_thresh, 0.2);
+    pnh_.param("l2_max",   options_.l2_max, 0.5);
+    pnh_.param("strategy", options_.strategy, std::string("gn"));
+
+    int dummy;
+    pnh_.param("gloc_particles", dummy, 3000);
+    options_.gloc_particles = dummy;
+
+    pnh_.param("gloc_iters", dummy, 20);
+    options_.gloc_iters= dummy;
+
+    pnh_.param("gloc_thresh", options_.gloc_thresh, 0.15);
+
+    // Request the map if not using the map topic
+    if (not use_map_topic_)
+    {
+        ROS_INFO("Requesting the map...");
+        nav_msgs::GetMap::Request  req;
+        nav_msgs::GetMap::Response resp;
+        while(ros::ok() and not ros::service::call("static_map", req, resp)){
+            ROS_WARN_THROTTLE(1, "Request for map failed; trying again ...");
+            ros::Duration d(0.5);
+            d.sleep();
+        }// end while
+
+        int itmp;
+        pnh_.param("patch_size", itmp, 32);
+        options_.patch_size = itmp;
+
+        InitLoc2DFromOccupancyGridMsg(initial_prior_, resp.map);
+    }
+    else
+    {
+        map_sub_ = nh_.subscribe("/map", 10, &Loc2DROS::onMapReceived, this, ros::TransportHints().tcpNoDelay());
+    }
+
+    // Should trigger an initial global localization?
+    bool do_global_loc;
+    pnh_.param("do_global_loc", do_global_loc, false);
+    if (do_global_loc){
+        ROS_INFO("Trigger Global Localization");
+        loc2d_.triggerGlobalLocalization();
+    }
 
     ROS_INFO("2D Localization node up and running");
 }
@@ -95,14 +146,21 @@ void lama::Loc2DROS::onInitialPose(const geometry_msgs::PoseWithCovarianceStampe
     float y = initial_pose->pose.pose.position.y;
     float yaw = tf::getYaw(initial_pose->pose.pose.orientation);
 
-    ROS_INFO("Setting pose to (%f, %f, %f)", x, y ,yaw);
-    lama::Pose2D pose(x, y, yaw);
+    onInitialPose(lama::Pose2D(x, y, yaw));
+}
 
-    loc2d_.setPose(pose);
+void lama::Loc2DROS::onInitialPose(const Pose2D& prior)
+{
+    ROS_INFO("Setting pose to (%f, %f, %f)", prior.x(), prior.y() ,prior.rotation());
+    loc2d_.setPose(prior);
+    force_update_ = force_update_on_initial_pose_;
 }
 
 void lama::Loc2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_scan)
 {
+    if (not first_map_received_)
+        return;
+
     int laser_index = -1;
 
     // verify if it is from a known source
@@ -126,10 +184,9 @@ void lama::Loc2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sca
     lama::Pose2D odom(odom_tf.getOrigin().x(), odom_tf.getOrigin().y(),
                               tf::getYaw(odom_tf.getRotation()));
 
-    bool update = loc2d_.enoughMotion(odom);
+    bool update = force_update_ or loc2d_.enoughMotion(odom);
 
     if (update){
-
         size_t size = laser_scan->ranges.size();
         size_t beam_step = 1;
 
@@ -167,7 +224,13 @@ void lama::Loc2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sca
             cloud->points.push_back( point );
         }
 
-        loc2d_.update(cloud, odom, laser_scan->header.stamp.toSec());
+        loc2d_.update(cloud, odom, laser_scan->header.stamp.toSec(), force_update_);
+        force_update_ = false;
+
+        // Report global localization if enables
+        if (loc2d_.globalLocalizationIsActive()){
+            ROS_INFO("Global Localization RMSE: %f", loc2d_.getRMSE());
+        }
 
         Pose2D pose = loc2d_.getPose();
         // subtracting base to odom from map to base and send map to odom instead
@@ -201,38 +264,29 @@ void lama::Loc2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sca
     } // end if (update)
 }
 
-void lama::Loc2DROS::InitLoc2DFromOccupancyGridMsg(const nav_msgs::OccupancyGrid& msg)
+void lama::Loc2DROS::onMapReceived(const nav_msgs::OccupancyGridConstPtr& msg)
 {
-    Vector2d pos; double tmp;
-    pnh_.param("initial_pos_x", pos[0], 0.0);
-    pnh_.param("initial_pos_y", pos[1], 0.0);
-    pnh_.param("initial_pos_a", tmp, 0.0);
-    lama::Pose2D prior(pos, tmp);
+    if (first_map_only_ and first_map_received_)
+        return;
+    InitLoc2DFromOccupancyGridMsg(use_pose_on_new_map_ ? loc2d_.getPose() : initial_prior_, *msg);
+}
 
-    Loc2D::Options options;
-    pnh_.param("d_thresh", options.trans_thresh, 0.01);
-    pnh_.param("a_thresh", options.rot_thresh, 0.2);
-    pnh_.param("l2_max",   options.l2_max, 0.5);
-    pnh_.param("strategy", options.strategy, std::string("gn"));
-
-    int itmp;
-    pnh_.param("patch_size", itmp, 32);
-    options.patch_size = itmp;
-
-    options.resolution = msg.info.resolution;
-
-    loc2d_.Init(options);
-    loc2d_.setPose(prior);
+void lama::Loc2DROS::InitLoc2DFromOccupancyGridMsg(const Pose2D& prior, const nav_msgs::OccupancyGrid& msg)
+{
+    options_.resolution = msg.info.resolution;
+    loc2d_.Init(options_);
+    onInitialPose(prior);
 
     ROS_INFO("Localization parameters: d_thresh: %.2f, a_thresh: %.2f, l2_max: %.2f",
-             options.trans_thresh, options.rot_thresh, options.l2_max);
+             options_.trans_thresh, options_.rot_thresh, options_.l2_max);
 
     unsigned int width = msg.info.width;
     unsigned int height= msg.info.height;
 
     for (unsigned int j = 0; j < height; ++j)
-        for (unsigned int i = 0; i < width;  ++i){
-
+    {
+        for (unsigned int i = 0; i < width;  ++i)
+        {
             Vector3d coords;
             coords.x() = msg.info.origin.position.x + i * msg.info.resolution;
             coords.y() = msg.info.origin.position.y + j * msg.info.resolution;
@@ -244,9 +298,11 @@ void lama::Loc2DROS::InitLoc2DFromOccupancyGridMsg(const nav_msgs::OccupancyGrid
                 loc2d_.occupancy_map->setOccupied(coords);
                 loc2d_.distance_map->addObstacle(loc2d_.distance_map->w2m(coords));
             }
-        }// end for
+        }
+    }
 
     loc2d_.distance_map->update();
+    first_map_received_ = true;
 }
 
 bool lama::Loc2DROS::initLaser(const sensor_msgs::LaserScanConstPtr& laser_scan)
@@ -300,6 +356,20 @@ bool lama::Loc2DROS::initLaser(const sensor_msgs::LaserScanConstPtr& laser_scan)
     frame_to_laser_[laser_scan->header.frame_id] = laser_index;
 
     ROS_INFO("New laser configured (id=%d frame_id=%s)", laser_index, laser_scan->header.frame_id.c_str() );
+    return true;
+}
+
+bool lama::Loc2DROS::onTriggerUpdate(std_srvs::Empty::Request&, std_srvs::Empty::Response&)
+{
+    ROS_INFO("Forced localization update Triggered");
+    force_update_ = true;
+    return true;
+}
+
+bool lama::Loc2DROS::globalLocalizationCallback(std_srvs::Empty::Request& req, std_srvs::Empty::Response& resp)
+{
+    ROS_INFO("Global Localization Triggered");
+    loc2d_.triggerGlobalLocalization();
     return true;
 }
 
