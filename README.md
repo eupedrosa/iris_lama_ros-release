@@ -1,3 +1,26 @@
+## iris_lama_ros (melodic) - 1.2.0-1
+
+The packages in the `iris_lama_ros` repository were released into the `melodic` distro by running `/usr/bin/bloom-release iris_lama_ros --rosdistro melodic` on `Sat, 10 Apr 2021 15:00:04 -0000`
+
+The `iris_lama_ros` package was released.
+
+Version of package(s) in repository `iris_lama_ros`:
+
+- upstream repository: https://github.com/iris-ua/iris_lama_ros.git
+- release repository: https://github.com/eupedrosa/iris_lama_ros-release.git
+- rosdistro version: `1.1.0-1`
+- old version: `1.1.0-1`
+- new version: `1.2.0-1`
+
+Versions of tools used:
+
+- bloom version: `0.10.3`
+- catkin_pkg version: `0.4.23`
+- rosdep version: `0.20.0`
+- rosdistro version: `0.8.3`
+- vcstools version: `0.1.42`
+
+
 ## iris_lama_ros (noetic) - 1.1.0-1
 
 The packages in the `iris_lama_ros` repository were released into the `noetic` distro by running `/usr/bin/bloom-release iris_lama_ros --track noetic --rosdistro noetic --new-track` on `Wed, 16 Dec 2020 10:09:52 -0000`
