@@ -42,11 +42,11 @@ lama::Loc2DROS::Loc2DROS()
     // Load parameters from the server.
     double tmp;
 
-    pnh_.param("global_frame_id", global_frame_id_, std::string("/map"));
-    pnh_.param("odom_frame_id",   odom_frame_id_,   std::string("/odom"));
-    pnh_.param("base_frame_id",   base_frame_id_,   std::string("/base_link"));
+    pnh_.param("global_frame_id", global_frame_id_, std::string("map"));
+    pnh_.param("odom_frame_id",   odom_frame_id_,   std::string("odom"));
+    pnh_.param("base_frame_id",   base_frame_id_,   std::string("base_link"));
 
-    pnh_.param("scan_topic", scan_topic_, std::string("/scan"));
+    pnh_.param("scan_topic", scan_topic_, std::string("scan"));
 
     pnh_.param("transform_tolerance", tmp, 0.1); transform_tolerance_.fromSec(tmp);
 
@@ -67,13 +67,13 @@ lama::Loc2DROS::Loc2DROS()
     laser_scan_filter_ = new tf::MessageFilter<sensor_msgs::LaserScan>(*laser_scan_sub_, *tf_, odom_frame_id_, 100);
     laser_scan_filter_->registerCallback(boost::bind(&Loc2DROS::onLaserScan, this, _1));
 
-    pose_sub_ = nh_.subscribe("/initialpose", 1, &Loc2DROS::onInitialPose, this);
+    pose_sub_ = nh_.subscribe("initialpose", 1, &Loc2DROS::onInitialPose, this);
 
     // Set publishers
-    pose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>("/pose", 10);
+    pose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>("pose", 2, true);
 
     // Services
-    srv_update_ = nh_.advertiseService("/request_nomotion_update", &Loc2DROS::onTriggerUpdate, this);
+    srv_update_ = nh_.advertiseService("request_nomotion_update", &Loc2DROS::onTriggerUpdate, this);
     srv_global_loc_ = nh_.advertiseService("global_localization", &Loc2DROS::globalLocalizationCallback, this);
 
     // Fetch algorithm options
@@ -117,7 +117,7 @@ lama::Loc2DROS::Loc2DROS()
     }
     else
     {
-        map_sub_ = nh_.subscribe("/map", 10, &Loc2DROS::onMapReceived, this, ros::TransportHints().tcpNoDelay());
+        map_sub_ = nh_.subscribe("map", 10, &Loc2DROS::onMapReceived, this, ros::TransportHints().tcpNoDelay());
     }
 
     // Should trigger an initial global localization?
@@ -127,6 +127,9 @@ lama::Loc2DROS::Loc2DROS()
         ROS_INFO("Trigger Global Localization");
         loc2d_.triggerGlobalLocalization();
     }
+
+    // The pose is published in the global frame.
+    cur_pose_msg_.header.frame_id = global_frame_id_;
 
     ROS_INFO("2D Localization node up and running");
 }
@@ -138,6 +141,23 @@ lama::Loc2DROS::~Loc2DROS()
 
     delete tf_;
     delete tfb_;
+}
+
+void lama::Loc2DROS::publishCurrentPose()
+{
+    cur_pose_msg_.pose.pose.position.x = loc2d_.getPose().x();
+    cur_pose_msg_.pose.pose.position.y = loc2d_.getPose().y();
+    cur_pose_msg_.pose.pose.orientation.z = current_orientation_.getZ();
+    cur_pose_msg_.pose.pose.orientation.w = current_orientation_.getW();
+    cur_pose_msg_.header.stamp = ros::Time::now();
+
+    auto& covar = loc2d_.getCovar();
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 2; ++j)
+            cur_pose_msg_.pose.covariance[6*i+j] = covar(i,j);
+    cur_pose_msg_.pose.covariance[6*5+5] = covar(2,2);
+
+    pose_pub_.publish(cur_pose_msg_);
 }
 
 void lama::Loc2DROS::onInitialPose(const geometry_msgs::PoseWithCovarianceStampedConstPtr& initial_pose)
@@ -154,6 +174,8 @@ void lama::Loc2DROS::onInitialPose(const Pose2D& prior)
     ROS_INFO("Setting pose to (%f, %f, %f)", prior.x(), prior.y() ,prior.rotation());
     loc2d_.setPose(prior);
     force_update_ = force_update_on_initial_pose_;
+    current_orientation_ = tf::createQuaternionFromYaw(prior.rotation());
+    publishCurrentPose();
 }
 
 void lama::Loc2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_scan)
@@ -204,10 +226,7 @@ void lama::Loc2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sca
         for(size_t i = 0; i < size; i += beam_step ){
             double range;
 
-            if (laser_is_reversed_[laser_index])
-                range = laser_scan->ranges[size - i - 1];
-            else
-                range = laser_scan->ranges[i];
+            range = laser_scan->ranges[i];
 
             if (not std::isfinite(range))
                 continue;
@@ -232,11 +251,11 @@ void lama::Loc2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sca
             ROS_INFO("Global Localization RMSE: %f", loc2d_.getRMSE());
         }
 
-        Pose2D pose = loc2d_.getPose();
+        current_orientation_ = tf::createQuaternionFromYaw(loc2d_.getPose().rotation());
         // subtracting base to odom from map to base and send map to odom instead
         tf::Stamped<tf::Pose> odom_to_map;
         try{
-            tf::Transform tmp_tf(tf::createQuaternionFromYaw(pose.rotation()), tf::Vector3(pose.x(), pose.y(), 0));
+            tf::Transform tmp_tf(current_orientation_, tf::Vector3(loc2d_.getPose().x(), loc2d_.getPose().y(), 0));
             tf::Stamped<tf::Pose> tmp_tf_stamped (tmp_tf.inverse(), laser_scan->header.stamp, base_frame_id_);
             tf_->transformPose(odom_frame_id_, tmp_tf_stamped, odom_to_map);
 
@@ -255,6 +274,7 @@ void lama::Loc2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sca
                                             transform_expiration,
                                             global_frame_id_, odom_frame_id_);
         tfb_->sendTransform(tmp_tf_stamped);
+        publishCurrentPose();
     } else {
         // Nothing has change, therefore, republish the last transform.
         ros::Time transform_expiration = (laser_scan->header.stamp + transform_tolerance_);
@@ -315,42 +335,17 @@ bool lama::Loc2DROS::initLaser(const sensor_msgs::LaserScanConstPtr& laser_scan)
     catch(tf::TransformException& e)
     { ROS_ERROR("Could not find origin of %s", laser_scan->header.frame_id.c_str()); return false; }
 
-    // Validate laser orientation (code taken from slam_gmapping)
-    // create a point 1m above the laser position and transform it into the laser-frame
-    tf::Vector3 v;
-    v.setValue(0, 0, 1 + laser_origin.getOrigin().z());
-    tf::Stamped<tf::Vector3> up(v, laser_scan->header.stamp, base_frame_id_);
-    try {
-        tf_->transformPoint(laser_scan->header.frame_id, up, up);
-        ROS_DEBUG("Z-Axis in sensor frame: %.3f", up.z());
-    } catch(tf::TransformException& e) {
-        ROS_ERROR("Unable to determine orientation of laser: %s", e.what());
-        return false;
-    }
+    tf::Matrix3x3 mat(laser_origin.getRotation());
+    tfScalar yaw, pitch, roll;
+    mat.getEulerYPR(yaw, pitch, roll);
 
-    // we do not take roll or pitch into account. So check for correct sensor alignment.
-    if (std::fabs(std::fabs(up.z()) - 1) > 0.001) {
-        ROS_WARN("Laser has to be mounted planar! Z-coordinate has to be 1 or -1, but gave: %.5f", up.z());
-        return false;
-    }
+    lama::Pose3D lp(laser_origin.getOrigin().x(),
+                    laser_origin.getOrigin().y(),
+                    laser_origin.getOrigin().z(),
+                    roll, pitch, yaw);
 
-    if (up.z() > 0) {
-        laser_is_reversed_.push_back(laser_scan->angle_min > laser_scan->angle_max);
-
-        lama::Pose3D lp(laser_origin.getOrigin().x(), laser_origin.getOrigin().y(), 0,
-                             0, 0, tf::getYaw(laser_origin.getRotation()));
-
-        lasers_origin_.push_back( lp );
+    lasers_origin_.push_back( lp );
         ROS_INFO("Laser is mounted upwards.");
-    } else {
-        laser_is_reversed_.push_back(laser_scan->angle_min < laser_scan->angle_max);
-
-        lama::Pose3D lp(laser_origin.getOrigin().x(), laser_origin.getOrigin().y(), 0,
-                             M_PI, 0, tf::getYaw(laser_origin.getRotation()));
-
-        lasers_origin_.push_back( lp );
-        ROS_INFO("Laser is mounted upside down.");
-    }
 
     int laser_index = (int)frame_to_laser_.size();  // simple ID generator :)
     frame_to_laser_[laser_scan->header.frame_id] = laser_index;
