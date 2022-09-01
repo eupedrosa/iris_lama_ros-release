@@ -50,4 +50,4 @@ tracks:
     ros_distro: noetic
     vcs_type: git
     vcs_uri: https://github.com/iris-ua/iris_lama_ros.git
-    version: :{auto}
+    version: :{ask}
