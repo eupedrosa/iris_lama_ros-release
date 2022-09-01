@@ -1,7 +1,7 @@
 /*
  * IRIS Localization and Mapping (LaMa) for ROS
  *
- * Copyright (c) 2019-today, Eurico Pedrosa, University of Aveiro - Portugal
+ * Copyright (c) 2022-today, Eurico Pedrosa, University of Aveiro - Portugal
  * All rights reserved.
  * License: New BSD
  *
@@ -42,6 +42,12 @@
 #include <tf/message_filter.h>
 #include <tf/tf.h>
 
+#include <tf2/LinearMath/Transform.h>
+
+#include <tf2_ros/message_filter.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/transform_broadcaster.h>
+
 #include <message_filters/subscriber.h>
 
 // Pose publishing
@@ -52,32 +58,34 @@
 #include <nav_msgs/OccupancyGrid.h>
 #include <nav_msgs/GetMap.h>
 
-#include <lama/slam2d.h>
+#include <lama/graph_slam2d.h>
 #include <lama/pose3d.h>
+#include <lama/sdm/occupancy_map.h>
 
 #include <Eigen/StdVector>
 
+#include "base_ros_node.h"
+
 namespace lama {
 
-class Slam2DROS {
+class GraphSlam2DROS : public BaseROSNode<sensor_msgs::LaserScan> {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-    Slam2DROS();
-    ~Slam2DROS();
+    GraphSlam2DROS();
+    virtual ~GraphSlam2DROS();
 
-    void onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_scan);
+    virtual void onData(const sensor_msgs::LaserScan::ConstPtr& laser_scan) final;
+
     bool onGetMap(nav_msgs::GetMap::Request &req, nav_msgs::GetMap::Response &res);
     void publishMaps();
 
-    void printSummary();
+    inline void optimizePoseGraph()
+    { slam2d_->optimizePoseGraph(); }
 
 private:
 
-    bool initLaser(const sensor_msgs::LaserScanConstPtr& laser_scan);
-
-    bool OccupancyMsgFromOccupancyMap(nav_msgs::OccupancyGrid& msg);
-    bool DistanceMsgFromOccupancyMap(nav_msgs::OccupancyGrid& msg);
+    bool OccupancyMsgFromOccupancyMap(nav_msgs::OccupancyGrid& msg, const lama::OccupancyMap* occ);
 
     void publishCallback(const ros::TimerEvent &);
 private:
@@ -87,43 +95,27 @@ private:
     ros::NodeHandle pnh_; ///< Private ros node handle.
 
     ros::Timer periodic_publish_; /// timer user to publish periodically the maps
-    tf::TransformListener*    tf_;  ///< Gloabal transform listener.
-    tf::TransformBroadcaster* tfb_; ///< Position transform broadcaster.
-
-    tf::Transform latest_tf_; ///< The most recent transform.
-
-    tf::MessageFilter<sensor_msgs::LaserScan>*           laser_scan_filter_; ///< Transform and LaserScan message Syncronizer.
-    message_filters::Subscriber<sensor_msgs::LaserScan>* laser_scan_sub_;    ///< Subscriber to the LaserScan message.
 
     // publishers
     ros::Publisher pose_pub_;   ///< Publisher of the pose with covariance.
     ros::Publisher map_pub_;
+    ros::Publisher transient_map_pub_;
     ros::Publisher dist_pub_;
+    ros::Publisher graph_pub_;
 
     ros::ServiceServer ss_;
 
     // == Laser stuff ==
-    // allow to handle multiple lasers at once
-    std::map<std::string, int> frame_to_laser_; ///< Map with the known lasers.
-    std::vector<Pose3D, Eigen::aligned_allocator<Pose3D>>        lasers_origin_;  ///< Laser origin transformation
     double max_range_;
+    double min_range_;
     int beam_step_;
 
     // maps
     nav_msgs::OccupancyGrid ros_occ_;
     nav_msgs::OccupancyGrid ros_cost_;
 
-    // == configuration variables ==
-    std::string global_frame_id_;       ///< Global frame id, usualy the map frame.
-    std::string odom_frame_id_;         ///< Odometry frame id.
-    std::string base_frame_id_;         ///< Robot base frame.
-
-    std::string scan_topic_;   ///< LaserScan message topic.
-
-    ros::Duration transform_tolerance_;   ///< Defines how long map->odom transform is good for.
-
     // == Inner state ==
-    Slam2D*   slam2d_;
+    GraphSlam2D* slam2d_;
     Pose2D    odom_;
 };
 

@@ -129,13 +129,16 @@ private:
     std::string odom_frame_id_;         ///< Odometry frame id.
     std::string base_frame_id_;         ///< Robot base frame.
 
-    std::string scan_topic_;   ///< LaserScan message topic.
+    std::string scan_topic_;            ///< LaserScan message topic.
 
-    bool use_map_topic_; ///< True to subscribe to the map topic instead of requesting the map through the "static_map" service
-    bool first_map_only_; ///< True to use only the first map ever received
-    bool first_map_received_; ///< True if the first map has already been received
-    bool use_pose_on_new_map_; ///< True to use the current algorithm pose when the map changes
-    bool force_update_; ///< True to force an update when a new laser scan is received
+    double temporal_update_;            ///< Force an update when the last processed scan is older than this.
+
+    bool publish_tf_;                   ///< True to publish the transformations.
+    bool use_map_topic_;                ///< True to subscribe to the map topic instead of requesting the map through the "static_map" service
+    bool first_map_only_;               ///< True to use only the first map ever received
+    bool first_map_received_;           ///< True if the first map has already been received
+    bool use_pose_on_new_map_;          ///< True to use the current algorithm pose when the map changes
+    bool force_update_;                 ///< True to force an update when a new laser scan is received
     bool force_update_on_initial_pose_; ///< True to trigger a forced updated when an initial pose is received
 
     // == Inner state ==
@@ -145,6 +148,9 @@ private:
     Pose2D initial_prior_;
     tf::Quaternion current_orientation_;
     geometry_msgs::PoseWithCovarianceStamped cur_pose_msg_;
+
+    double max_range_ = 20;     ///< Maximum laser scan range
+    int beam_step_ = 1;         ///< Number of beams to step (or skip) in each scan.
 };
 
 } /* lama */
