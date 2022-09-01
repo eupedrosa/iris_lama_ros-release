@@ -67,11 +67,15 @@ lama::Slam2DROS::Slam2DROS()
     pnh_.param("use_compression",       options.use_compression, false);
     pnh_.param("compression_algorithm", options.calgorithm, std::string("lz4"));
     pnh_.param("mrange",   max_range_, 16.0);
+    pnh_.param("beam_step", beam_step_, 1);
+
+    beam_step_ = std::max(1, beam_step_);
 
     int itmp;
     pnh_.param("max_iterations", itmp, 100); options.max_iter   = itmp;
     pnh_.param("patch_size",     itmp,  32); options.patch_size = itmp;
     pnh_.param("cache_size",     itmp, 100); options.cache_size = itmp;
+    pnh_.param("transient_map", options.transient_map, false);
 
     pnh_.param("create_summary", options.create_summary, false);
 
@@ -143,7 +147,6 @@ void lama::Slam2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sc
     if (update){
 
         size_t size = laser_scan->ranges.size();
-        size_t beam_step = 1;
 
         float max_range;
         if (max_range_ == 0.0 || max_range_ > laser_scan->range_max)
@@ -161,7 +164,7 @@ void lama::Slam2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sc
         cloud->sensor_orientation_ = Quaterniond(lasers_origin_[laser_index].state.so3().matrix());
 
         cloud->points.reserve(laser_scan->ranges.size());
-        for(size_t i = 0; i < size; i += beam_step ){
+        for(size_t i = 0; i < size; i += beam_step_){
             const double range = laser_scan->ranges[i];
 
             if (not std::isfinite(range))
@@ -170,18 +173,29 @@ void lama::Slam2DROS::onLaserScan(const sensor_msgs::LaserScanConstPtr& laser_sc
             if (range >= max_range || range <= min_range)
                 continue;
 
-
             Eigen::Vector3d point;
             point << range * std::cos(angle_min+(i*angle_inc)),
                      range * std::sin(angle_min+(i*angle_inc)),
                      0;
-
             cloud->points.push_back( point );
         }
 
         slam2d_->update(cloud, odom, laser_scan->header.stamp.toSec());
 
         Pose2D pose = slam2d_->getPose();
+        // publish the pose
+        geometry_msgs::PoseWithCovarianceStamped msg;
+        msg.header.frame_id = global_frame_id_;
+        msg.header.stamp = laser_scan->header.stamp;
+        msg.pose.pose.position.x = pose.x();
+        msg.pose.pose.position.y = pose.y();
+        msg.pose.pose.position.z = 0.0;
+
+        msg.pose.pose.orientation = tf::createQuaternionMsgFromYaw(pose.rotation());
+
+        // TODO: Pose covariance.
+        pose_pub_.publish(msg);
+
         // subtracting base to odom from map to base and send map to odom instead
         tf::Stamped<tf::Pose> odom_to_map;
         try{
@@ -258,10 +272,10 @@ bool lama::Slam2DROS::initLaser(const sensor_msgs::LaserScanConstPtr& laser_scan
 
 bool lama::Slam2DROS::OccupancyMsgFromOccupancyMap(nav_msgs::OccupancyGrid& msg)
 {
-    const FrequencyOccupancyMap* map = slam2d_->getOccupancyMap();
-    if (map == 0)
+    if (slam2d_->getOccupancyMap() == 0)
         return false;
 
+    const FrequencyOccupancyMap* map = new FrequencyOccupancyMap(*slam2d_->getOccupancyMap());
     Vector3ui imin, imax;
     map->bounds(imin, imax);
 
@@ -271,7 +285,7 @@ bool lama::Slam2DROS::OccupancyMsgFromOccupancyMap(nav_msgs::OccupancyGrid& msg)
     if (width == 0 || height == 0)
         return false;
 
-    if ( width*height > msg.data.size() )
+    if ( width*height != msg.data.size() )
         msg.data.resize(width*height);
 
     Image image;
@@ -301,14 +315,16 @@ bool lama::Slam2DROS::OccupancyMsgFromOccupancyMap(nav_msgs::OccupancyGrid& msg)
     msg.info.origin.position.z = 0;
     msg.info.origin.orientation = tf::createQuaternionMsgFromYaw(0);
 
+    delete map;
     return true;
 }
 
 bool lama::Slam2DROS::DistanceMsgFromOccupancyMap(nav_msgs::OccupancyGrid& msg)
 {
-    const DynamicDistanceMap* map = slam2d_->getDistanceMap();
-    if (map == 0)
+    if (slam2d_->getDistanceMap() == 0)
         return false;
+
+    const DynamicDistanceMap* map = new DynamicDistanceMap(*slam2d_->getDistanceMap());
 
     Vector3ui imin, imax;
     map->bounds(imin, imax);
@@ -321,7 +337,7 @@ bool lama::Slam2DROS::DistanceMsgFromOccupancyMap(nav_msgs::OccupancyGrid& msg)
     if (width == 0 || height == 0)
         return false;
 
-    if ( width*height > msg.data.size() )
+    if ( width*height != msg.data.size() )
         msg.data.resize(width*height);
 
     Image image;
