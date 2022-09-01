@@ -1,0 +1,12 @@
+Source: ros-noetic-iris-lama-ros
+Section: misc
+Priority: optional
+Maintainer: Eurico Pedrosa <efp@ua.pt>
+Build-Depends: debhelper (>= 9.0.0), libyaml-cpp-dev, ros-noetic-catkin, ros-noetic-geometry-msgs, ros-noetic-iris-lama, ros-noetic-message-filters, ros-noetic-nav-msgs, ros-noetic-rosbag, ros-noetic-rosbag-storage, ros-noetic-roscpp, ros-noetic-std-srvs, ros-noetic-tf, ros-noetic-tf-conversions, ros-noetic-tf2-geometry-msgs, ros-noetic-visualization-msgs
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-noetic-iris-lama-ros
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libyaml-cpp-dev, ros-noetic-geometry-msgs, ros-noetic-iris-lama, ros-noetic-message-filters, ros-noetic-nav-msgs, ros-noetic-rosbag, ros-noetic-rosbag-storage, ros-noetic-roscpp, ros-noetic-std-srvs, ros-noetic-tf, ros-noetic-tf-conversions, ros-noetic-tf2-geometry-msgs, ros-noetic-visualization-msgs
+Description: ROS package of IRIS Localization and Mapping (LaMa).
